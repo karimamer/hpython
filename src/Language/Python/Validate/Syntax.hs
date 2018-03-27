@@ -451,4 +451,26 @@ validateParamsSyntax e = go [] False (toList e) $> coerce e
              validateExprSyntax expr)
             (go (_identValue name:names) True params)
 
+validateModuleSyntax
+  :: ( AsSyntaxError e v a
+     , Member Indentation v
+     )
+  => Module v a
+  -> ValidateSyntax e (Module (Nub (Syntax ': v)) a)
+validateModuleSyntax (Module n mc) = Module n <$> validateModuleContentSyntax mc
+
+validateModuleContentSyntax
+  :: ( AsSyntaxError e v a
+     , Member Indentation v
+     )
+  => ModuleContent v a
+  -> ValidateSyntax e (ModuleContent (Nub (Syntax ': v)) a)
+validateModuleContentSyntax EmptyModule = pure EmptyModule
+validateModuleContentSyntax (EmptyLine ss nl rest) =
+  EmptyLine ss nl <$> validateModuleContentSyntax rest
+validateModuleContentSyntax (Statement s rest) =
+  Statement <$>
+  validateStatementSyntax s <*>
+  validateModuleContentSyntax rest
+
 makeWrapped ''ValidateSyntax

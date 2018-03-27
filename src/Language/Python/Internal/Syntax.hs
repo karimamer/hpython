@@ -22,7 +22,7 @@ import Data.String
 import GHC.Exts
 import Text.Parser.Char
 import Text.Parser.Token
-import Text.Parser.Token.Highlight
+import Text.Parser.Token.Highlight (Highlight(Identifier, ReservedIdentifier))
 
 data Space = A_Space | A_Tab
   deriving (Eq, Show, Ord)
@@ -31,6 +31,21 @@ data ModuleContent v a
   | EmptyLine [Space] Newline (ModuleContent v a)
   | Statement (Statement v a) (ModuleContent v a)
   deriving (Eq, Show, Functor, Foldable)
+
+moduleContentInit :: ModuleContent v a -> Maybe (ModuleContent v a)
+moduleContentInit = go
+  where
+    go EmptyModule = Nothing
+    go (EmptyLine _ _ EmptyModule) = Just EmptyModule
+    go (EmptyLine a b rest) = EmptyLine a b <$> go rest
+    go (Statement _ EmptyModule) = Just EmptyModule
+    go (Statement a rest) = Statement a <$> go rest
+
+moduleContentTail :: ModuleContent v a -> Maybe (ModuleContent v a)
+moduleContentTail EmptyModule = Nothing
+moduleContentTail (EmptyLine _ _ rest) = Just rest
+moduleContentTail (Statement _ rest) = Just rest
+
 data Module v a
   = Module
   { _moduleName :: String

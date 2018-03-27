@@ -244,3 +244,16 @@ renderBinOp (Exp _) = "**"
 renderBinOp (BoolAnd _) = "and"
 renderBinOp (BoolOr _) = "or"
 renderBinOp (Equals _) = "=="
+
+renderModule :: Module v a -> Lines String
+renderModule (Module _ content) = renderModuleContent content
+
+renderSpaces :: Space -> String
+renderSpaces A_Space = " "
+renderSpaces A_Tab = "\t"
+
+renderModuleContent :: ModuleContent v a -> Lines String
+renderModuleContent EmptyModule = NoLines
+renderModuleContent (EmptyLine ss nl rest) =
+  ManyLines (foldMap renderSpaces ss) nl $ renderModuleContent rest
+renderModuleContent (Statement s rest) = renderStatement s <> renderModuleContent rest

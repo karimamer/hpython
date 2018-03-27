@@ -9,6 +9,7 @@ import Data.List.NonEmpty (NonEmpty(..))
 import Hedgehog
 import qualified Hedgehog.Gen as Gen
 import qualified Hedgehog.Range as Range
+import qualified Hedgehog.Internal.Shrink as Shrink
 
 import qualified Data.List.NonEmpty as NonEmpty
 
@@ -238,3 +239,30 @@ genStatement = Gen.sized $ \n ->
             genWhitespaces1 <*>
             Gen.resize n' (genSizedCommaSep1 genIdent)
       ]
+
+genModule :: MonadGen m => m (Module '[] ())
+genModule = Module <$> fmap _identValue genIdent <*> genModuleContent
+
+genModuleContent :: MonadGen m => m (ModuleContent '[] ())
+genModuleContent =
+  Gen.sized $ \n ->
+    if n <= 1
+      then pure EmptyModule
+      else
+        Gen.shrink (\a -> toList (moduleContentInit a) ++ toList (moduleContentTail a)) $
+        Gen.scale (subtract 1) $
+        Gen.sized $ \n -> do
+          n' <- Gen.integral (Range.constant 0 n)
+          Gen.choice
+            [ EmptyLine <$>
+              Gen.shrink
+                Shrink.list
+                (Gen.list
+                   (Range.singleton $ unSize n' - 1)
+                   (Gen.element [A_Space, A_Tab])) <*>
+              genNewline <*>
+              Gen.scale (subtract n') genModuleContent
+            , Statement <$>
+              Gen.resize n' genStatement <*>
+              Gen.scale (subtract n') genModuleContent
+            ]

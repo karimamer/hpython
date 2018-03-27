@@ -10,7 +10,7 @@ import Data.Functor
 import Data.List.NonEmpty (NonEmpty(..), some1)
 import Data.Semigroup hiding (Arg)
 import Text.Parser.Token hiding (commaSep)
-import Text.Trifecta hiding (newline, commaSep)
+import Text.Trifecta hiding (newline, commaSep, space)
 
 import Language.Python.Internal.Syntax
 
@@ -247,3 +247,17 @@ statement =
       (\a b c d e f g -> While g a b c d e f) <$>
       (reserved "while" *> many whitespace) <*> expr <*> many whitespace <* char ':' <*>
       many whitespace <*> newline <*> block
+
+space :: CharParsing m => m Space
+space = (char ' ' $> A_Space) <|> (char '\t' $> A_Tab)
+
+moduleContent
+  :: (DeltaParsing m, MonadState [[Whitespace]] m)
+  => m (ModuleContent '[] Span)
+moduleContent =
+  (eof $> EmptyModule) <|>
+  (try (EmptyLine <$> many space <*> newline) <?> "empty line") <*> moduleContent <|>
+  (Statement <$> statement <*> moduleContent)
+
+module' :: (DeltaParsing m, MonadState [[Whitespace]] m) => String -> m (Module '[] Span)
+module' name = Module name <$> moduleContent

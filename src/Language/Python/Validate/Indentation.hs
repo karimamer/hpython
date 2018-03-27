@@ -108,3 +108,21 @@ validateStatementIndentation e@Break{} = pure $ coerce e
 validateStatementIndentation e@Global{} = pure $ coerce e
 validateStatementIndentation e@Nonlocal{} = pure $ coerce e
 validateStatementIndentation e@Del{} = pure $ coerce e
+
+validateModuleIndentation
+  :: AsIndentationError e v a
+  => Module v a
+  -> Validate [e] (Module (Nub (Indentation ': v)) a)
+validateModuleIndentation (Module n mc) = Module n <$> validateModuleContentIndentation mc
+
+validateModuleContentIndentation
+  :: AsIndentationError e v a
+  => ModuleContent v a
+  -> Validate [e] (ModuleContent (Nub (Indentation ': v)) a)
+validateModuleContentIndentation EmptyModule = pure EmptyModule
+validateModuleContentIndentation (EmptyLine ss nl rest) =
+  EmptyLine ss nl <$> validateModuleContentIndentation rest
+validateModuleContentIndentation (Statement s rest) =
+  Statement <$>
+  validateStatementIndentation s <*>
+  validateModuleContentIndentation rest

@@ -267,3 +267,21 @@ validateExprScope e@None{} = pure $ coerce e
 validateExprScope e@Int{} = pure $ coerce e
 validateExprScope e@Bool{} = pure $ coerce e
 validateExprScope e@String{} = pure $ coerce e
+
+validateModuleScope
+  :: AsScopeError e v a
+  => Module v a
+  -> ValidateScope a e (Module (Nub (Scope ': v)) a)
+validateModuleScope (Module n mc) = Module n <$> validateModuleContentScope mc
+
+validateModuleContentScope
+  :: AsScopeError e v a
+  => ModuleContent v a
+  -> ValidateScope a e (ModuleContent (Nub (Scope ': v)) a)
+validateModuleContentScope EmptyModule = pure EmptyModule
+validateModuleContentScope (EmptyLine ss nl rest) =
+  EmptyLine ss nl <$> validateModuleContentScope rest
+validateModuleContentScope (Statement s rest) =
+  Statement <$>
+  validateStatementScope s <*>
+  validateModuleContentScope rest
