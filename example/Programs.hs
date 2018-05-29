@@ -19,8 +19,8 @@ append_to =
     [Space]
     "append_to"
     []
-    ( CommaSepMany (PositionalParam () "element") [] [Space] $
-      CommaSepOne (KeywordParam () "to" [] [] (List () [] CommaSepNone []))
+    ( CommaSepMany (PositionalParam () "element") [Space] $
+      CommaSepOne (KeywordParam () "to" [] (List () [] CommaSepNone []))
     )
     []
     []
@@ -28,18 +28,20 @@ append_to =
     (Block
      [ ( ()
        , replicate 4 Space
-       , SmallStatements
+       , Right $ SmallStatements
          (Expr () $
           Call ()
-            (Deref () (Ident () "to") [] [] "append") []
-            (CommaSepOne $ PositionalArg () (Ident () "element")))
+            (Deref () (Ident () "to") [] "append")
+            []
+            (CommaSepOne $ PositionalArg () (Ident () "element"))
+            [])
          []
          Nothing
          LF
        )
      , ( ()
        , replicate 4 Space
-       , SmallStatements (Return () [Space] (Ident () "to")) [] Nothing LF
+       , Right $ SmallStatements (Return () [Space] (Ident () "to")) [] Nothing LF
        )
      ])
 
@@ -99,12 +101,12 @@ yes =
 everything =
   Module
     [ Right append_to
-    , Left ([], LF)
+    , Left ([], Nothing, LF)
     , Right append_to'
-    , Left ([], LF)
+    , Left ([], Nothing, LF)
     , Right fact_tr
-    , Left ([], LF)
+    , Left ([], Nothing, LF)
     , Right spin
-    , Left ([], LF)
+    , Left ([], Nothing, LF)
     , Right yes
     ]

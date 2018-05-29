@@ -2,6 +2,7 @@
 module Scope (scopeTests) where
 
 import Control.Lens (has)
+import Data.Functor (($>))
 import Data.Validate
 import Language.Python.Validate.Syntax
 import Language.Python.Validate.Syntax.Error
@@ -22,6 +23,12 @@ scopeTests =
   , ("Scope test 3", withTests 1 test_3)
   , ("Scope test 4", withTests 1 test_4)
   , ("Scope test 5", withTests 1 test_5)
+  , ("Scope test 6", withTests 1 test_6)
+  , ("Scope test 7", withTests 1 test_7)
+  , ("Scope test 8", withTests 1 test_8)
+  , ("Scope test 9", withTests 1 test_9)
+  , ("Scope test 10", withTests 1 test_10)
+  , ("Scope test 11", withTests 1 test_11)
   ]
 
 validate
@@ -52,7 +59,7 @@ test_1 =
           , return_ $ var_ "a" .+ var_ "b" .+ var_ "c"
           ]
     res <- validate expr
-    res === Failure [FoundDynamic () (MkIdent () "c")]
+    res === Failure [FoundDynamic () (MkIdent () "c" [])]
 
 test_2 :: Property
 test_2 =
@@ -77,7 +84,7 @@ test_3 =
           [ return_ $ var_ "a" .+ var_ "b" .+ var_ "c" ]
     res <- validate expr
     annotateShow res
-    res === Failure [NotInScope (MkIdent () "c")]
+    res === Failure [NotInScope (MkIdent () "c" [])]
 
 test_4 :: Property
 test_4 =
@@ -89,7 +96,7 @@ test_4 =
           , expr_ $ call_ (var_ "g") []
           ]
     res <- validate expr
-    res === Failure [NotInScope (MkIdent () "g")]
+    res === Failure [NotInScope (MkIdent () "g" [])]
 
 test_5 :: Property
 test_5 =
@@ -101,4 +108,82 @@ test_5 =
           ]
     res <- validate expr
     annotateShow res
-    res === Failure [NotInScope (MkIdent () "c")]
+    res === Failure [NotInScope (MkIdent () "c" [])]
+
+test_6 :: Property
+test_6 =
+  property $ do
+    let
+      expr =
+        def_ "test" []
+          [ ifElse_ true_ [ var_ "x" .= 2 ] [ pass_ ]
+          , expr_ "x"
+          ]
+    res <- validate expr
+    annotateShow res
+    res === Failure [FoundDynamic () (MkIdent () "x" [])]
+
+test_7 :: Property
+test_7 =
+  property $ do
+    let
+      expr =
+        def_ "test" []
+          [ ifElse_ true_ [ pass_ ] [ var_ "x" .= 3 ]
+          , expr_ "x"
+          ]
+    res <- validate expr
+    annotateShow res
+    res === Failure [FoundDynamic () (MkIdent () "x" [])]
+
+test_8 :: Property
+test_8 =
+  property $ do
+    let
+      expr =
+        def_ "test" []
+          [ ifElse_ true_ [ pass_ ] [ var_ "x" .= 3 ]
+          , var_ "x" .= 1
+          , expr_ "x"
+          ]
+    res <- validate expr
+    annotateShow res
+    (res $> ()) === Success ()
+
+test_9 :: Property
+test_9 =
+  property $ do
+    let
+      expr =
+        def_ "test" []
+          [ for_ "x" (list_ [1]) [ pass_ ]
+          , expr_ "x"
+          ]
+    res <- validate expr
+    annotateShow res
+    res === Failure [FoundDynamic () (MkIdent () "x" [])]
+
+test_10 :: Property
+test_10 =
+  property $ do
+    let
+      expr =
+        def_ "test" []
+          [ for_ "x" (list_ [1]) [ expr_ "x" ]
+          ]
+    res <- validate expr
+    annotateShow res
+    (res $> ()) === Success ()
+
+test_11 :: Property
+test_11 =
+  property $ do
+    let
+      expr =
+        def_ "test" []
+          [ "x" .= 2
+          , for_ "x" (list_ [1]) [ pass_ ]
+          ]
+    res <- validate expr
+    annotateShow res
+    res === Failure [BadShadowing (MkIdent () "x" [Space])]

@@ -3,7 +3,7 @@
 module Language.Python.Validate.Indentation where
 
 import Control.Applicative
-import Control.Lens ((#), _Wrapped, view, from, _4, traverseOf, _Right)
+import Control.Lens ((#), _Wrapped, view, over, from, _2, _4, traverseOf, _Right)
 import Data.Coerce
 import Data.Type.Set
 import Data.Validate
@@ -41,18 +41,19 @@ validateBlockIndentation a =
   go Nothing (NonEmpty.toList $ view _Wrapped a)
   where
     go _ [] = pure []
-    go a ((ann, ws, st):xs)
+    go a ((ann, ws, Left c):xs) = ((ann, ws, Left c) :) <$> go a xs
+    go a ((ann, ws, Right st):xs)
       | null ws = Failure [_ExpectedIndent # ann] <*> go a xs
       | otherwise =
           case a of
             Nothing ->
               liftA2 (:)
-                ((,,) ann ws <$> validateStatementIndentation st)
+                ((,,) ann ws . Right <$> validateStatementIndentation st)
                 (go (Just ws) xs)
             Just ws'
               | equivalentIndentation ws ws' ->
                   liftA2 (:)
-                    ((,,) ann ws <$> validateStatementIndentation st)
+                    ((,,) ann ws . Right <$> validateStatementIndentation st)
                     (go a xs)
               | otherwise -> Failure [_WrongIndent # (ws', ws, ann)] <*> go a xs
 
@@ -74,6 +75,15 @@ validateArgsIndentation
   -> Validate [e] (CommaSep (Arg (Nub (Indentation ': v)) a))
 validateArgsIndentation e = pure $ coerce e
 
+validateExceptAsIndentation
+  :: AsIndentationError e v a
+  => ExceptAs v a
+  -> Validate [e] (ExceptAs (Nub (Indentation ': v)) a)
+validateExceptAsIndentation (ExceptAs ann e f) =
+  ExceptAs ann <$>
+  validateExprIndentation e <*>
+  pure (over (traverse._2) coerce f)
+
 validateCompoundStatementIndentation
   :: AsIndentationError e v a
   => CompoundStatement v a
@@ -85,21 +95,45 @@ validateCompoundStatementIndentation (Fundef a ws1 name ws2 params ws3 ws4 nl bo
   pure ws4 <*>
   pure nl <*>
   validateBlockIndentation body
-validateCompoundStatementIndentation (If a ws1 expr ws2 ws3 nl body body') =
+validateCompoundStatementIndentation (If a ws1 expr ws3 nl body body') =
   If a ws1 <$>
   validateExprIndentation expr <*>
-  pure ws2 <*>
   pure ws3 <*>
   pure nl <*>
   validateBlockIndentation body <*>
   traverseOf (traverse._4) validateBlockIndentation body'
-validateCompoundStatementIndentation (While a ws1 expr ws2 ws3 nl body) =
+validateCompoundStatementIndentation (While a ws1 expr ws3 nl body) =
   While a ws1 <$>
   validateExprIndentation expr <*>
-  pure ws2 <*>
   pure ws3 <*>
   pure nl <*>
   validateBlockIndentation body
+validateCompoundStatementIndentation (TryExcept a b c d e f k l) =
+  TryExcept a b c d <$>
+  validateBlockIndentation e <*>
+  traverse
+    (\(a, b, c, d, e) ->
+       (,,,,) a <$>
+       validateExceptAsIndentation b <*>
+       pure c <*>
+       pure d <*>
+       validateBlockIndentation e)
+    f <*>
+  traverseOf (traverse._4) validateBlockIndentation k <*>
+  traverseOf (traverse._4) validateBlockIndentation l
+validateCompoundStatementIndentation (TryFinally a b c d e f g h i) =
+  TryFinally a b c d <$>
+  validateBlockIndentation e <*>
+  pure f <*> pure g <*> pure h <*>
+  validateBlockIndentation i
+validateCompoundStatementIndentation (For a b c d e f g h i) =
+  For a b <$>
+  validateExprIndentation c <*> pure d <*>
+  validateExprIndentation e <*> pure f <*> pure g <*>
+  validateBlockIndentation h <*>
+  traverseOf (traverse._4) validateBlockIndentation i
+validateCompoundStatementIndentation (ClassDef a b c d e f g) =
+  ClassDef a b (coerce c) (coerce d) e f <$> validateBlockIndentation g
 
 validateStatementIndentation
   :: AsIndentationError e v a

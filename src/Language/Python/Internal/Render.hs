@@ -1,5 +1,4 @@
 {-# language GeneralizedNewtypeDeriving, DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
-{-# language TemplateHaskell #-}
 module Language.Python.Internal.Render where
 
 import Control.Lens.Getter
@@ -9,8 +8,21 @@ import Data.Maybe
 import Data.Semigroup (Semigroup(..))
 import Language.Python.Internal.Syntax
 
-escapeChars :: [Char]
-escapeChars = "\\\'\"\a\b\f\n\r\t\v"
+bracket :: String -> String
+bracket a = "(" <> a <> ")"
+
+escapeChars :: [(Char, Char)]
+escapeChars =
+  [ ('\\', '\\')
+  , ('"', '"')
+  , ('\a', 'a')
+  , ('\b', 'b')
+  , ('\f', 'f')
+  , ('\n', 'n')
+  , ('\r', 'r')
+  , ('\t', 't')
+  , ('\v', 'v')
+  ]
 
 intToHex :: Int -> String
 intToHex n = go n []
@@ -35,7 +47,7 @@ intToHex n = go n []
 
 renderChar :: Char -> String
 renderChar c
-  | c `elem` escapeChars = ['\\', c]
+  | Just c' <- lookup c escapeChars = ['\\', c']
   | otherwise =
       let
         shown = show c
@@ -83,10 +95,15 @@ instance Semigroup a => Monoid (Lines a) where
   mempty = NoLines
   mappend = (<>)
 
+renderAnyWhitespace :: Either Newline Whitespace -> String
+renderAnyWhitespace (Left nl) = renderNewline nl
+renderAnyWhitespace (Right sp) = renderWhitespace sp
+
 renderWhitespace :: Whitespace -> String
 renderWhitespace Space = " "
 renderWhitespace Tab = "\t"
 renderWhitespace (Continued nl ws) = "\\" <> renderNewline nl <> foldMap renderWhitespace ws
+renderWhitespace (Newline nl) = renderNewline nl
 
 renderNewline :: Newline -> String
 renderNewline CR = "\r"
@@ -96,65 +113,154 @@ renderNewline CRLF = "\r\n"
 renderCommaSep :: (a -> String) -> CommaSep a -> String
 renderCommaSep _ CommaSepNone = mempty
 renderCommaSep f (CommaSepOne a) = f a
-renderCommaSep f (CommaSepMany a ws1 ws2 c) =
-  f a <>
-  foldMap renderWhitespace ws1 <> "," <> foldMap renderWhitespace ws2 <>
+renderCommaSep f (CommaSepMany a ws2 c) =
+  f a <> "," <>
+  foldMap renderWhitespace ws2 <>
   renderCommaSep f c
 
 renderCommaSep1 :: (a -> String) -> CommaSep1 a -> String
 renderCommaSep1 f (CommaSepOne1 a) = f a
-renderCommaSep1 f (CommaSepMany1 a ws1 ws2 c) =
-  f a <>
-  foldMap renderWhitespace ws1 <> "," <> foldMap renderWhitespace ws2 <>
+renderCommaSep1 f (CommaSepMany1 a ws2 c) =
+  f a <> "," <>
+  foldMap renderWhitespace ws2 <>
   renderCommaSep1 f c
 
+renderCommaSep1' :: (a -> String) -> CommaSep1' a -> String
+renderCommaSep1' f (CommaSepOne1' a b) =
+  f a <>
+  foldMap (\x -> "," <> foldMap renderWhitespace x) b
+renderCommaSep1' f (CommaSepMany1' a ws2 c) =
+  f a <> "," <> foldMap renderWhitespace ws2 <>
+  renderCommaSep1' f c
+
 renderIdent :: Ident v a -> String
-renderIdent = _identValue
+renderIdent (MkIdent _ a b) = a <> foldMap renderWhitespace b
+
+renderComment :: Comment -> String
+renderComment (Comment s) = "#" <> s
+
+renderPrefix :: StringPrefix -> String
+renderPrefix p =
+  case p of
+    Prefix_r -> "r"
+    Prefix_R -> "R"
+    Prefix_u -> "u"
+    Prefix_U -> "U"
+    Prefix_b -> "b"
+    Prefix_B -> "B"
+    Prefix_br -> "br"
+    Prefix_Br -> "Br"
+    Prefix_bR -> "bR"
+    Prefix_BR -> "BR"
+    Prefix_rb -> "rb"
+    Prefix_rB -> "rB"
+    Prefix_Rb -> "Rb"
+    Prefix_RB -> "RB"
 
 renderExpr :: Expr v a -> String
+renderExpr (Not _ ws e) = "not" <> foldMap renderWhitespace ws <> renderExpr e
 renderExpr (Parens _ ws1 e ws2) =
   "(" <> foldMap renderWhitespace ws1 <>
-  renderExpr e <>
-  foldMap renderWhitespace ws2 <> ")"
-renderExpr (Bool _ b) = show b
+  renderExpr e <> ")" <> foldMap renderWhitespace ws2
+renderExpr (Bool _ b ws) = show b <> foldMap renderWhitespace ws
 renderExpr (Negate _ ws expr) =
   "-" <> foldMap renderWhitespace ws <>
     case expr of
-      BinOp _ _ _ Exp{} _ _ -> renderExpr expr
+      BinOp _ _ Exp{} _ -> renderExpr expr
       BinOp{} -> "(" <> renderExpr expr <> ")"
       _ -> renderExpr expr
-renderExpr (String _ b) = "\"" ++ foldMap renderChar b ++ "\""
-renderExpr (Int _ n) = show n
+renderExpr (String _ prefix strType b ws) =
+  let
+    quote =
+      case strType of
+        ShortSingle -> "'"
+        ShortDouble -> "\""
+        LongSingle -> "'''"
+        LongDouble -> "\"\"\""
+  in
+    foldMap renderPrefix prefix <> quote <>
+    foldMap renderChar b <> quote <> foldMap renderWhitespace ws
+renderExpr (Int _ n ws) = show n <> foldMap renderWhitespace ws
 renderExpr (Ident _ name) = renderIdent name
 renderExpr (List _ ws1 exprs ws2) =
   "[" <> foldMap renderWhitespace ws1 <>
   renderCommaSep renderExpr exprs <>
-  foldMap renderWhitespace ws2 <> "]"
-renderExpr (Call _ expr ws args) =
+  "]" <> foldMap renderWhitespace ws2
+renderExpr (Call _ expr ws args ws2) =
   (case expr of
-     Int _ n | n < 0 -> "(" <> renderExpr expr <> ")"
-     BinOp {} -> "(" <> renderExpr expr <> ")"
+     Int _ n _ | n < 0 -> "(" <> renderExpr expr <> ")"
+     BinOp{} -> "(" <> renderExpr expr <> ")"
+     Tuple{} -> "(" <> renderExpr expr <> ")"
+     Not{} -> "(" <> renderExpr expr <> ")"
      _ -> renderExpr expr) <>
-  foldMap renderWhitespace ws <>
-  renderArgs args
-renderExpr (Deref _ expr ws1 ws2 name) =
+  "(" <> foldMap renderWhitespace ws <> renderCommaSep renderArg args <>
+  ")" <> foldMap renderWhitespace ws2
+renderExpr (Deref _ expr ws name) =
   (case expr of
     Int{} -> "(" <> renderExpr expr <> ")"
     BinOp{} -> "(" <> renderExpr expr <> ")"
+    Tuple{} -> "(" <> renderExpr expr <> ")"
+    Not{} -> "(" <> renderExpr expr <> ")"
     _ -> renderExpr expr) <>
-  foldMap renderWhitespace ws1 <> "." <> foldMap renderWhitespace ws2 <>
+  "." <>
+  foldMap renderWhitespace ws <>
   renderIdent name
-renderExpr (None _) = "None"
-renderExpr (BinOp _ e1 ws1 op ws2 e2) =
+renderExpr (None _ ws) = "None" <> foldMap renderWhitespace ws
+renderExpr (BinOp _ e1 op e2) =
   (if shouldBracketLeft op e1 then bracket else id) (renderExpr e1) <>
-  foldMap renderWhitespace ws1  <>
   renderBinOp op <>
-  foldMap renderWhitespace ws2 <>
   (if shouldBracketRight op e2 then bracket else id) (renderExpr e2)
+renderExpr (Tuple _ a ws c) =
+  bracketTuple a (renderExpr a) <> "," <> foldMap renderWhitespace ws <>
+  foldMap
+    (renderCommaSep1' (\b -> bracketTuple b $ renderExpr b))
+    c
   where
-    bracket a = "(" <> a <> ")"
+    bracketTuple a =
+      case a of
+        Tuple{} -> bracket
+        _ -> id
+
+renderModuleName :: ModuleName v a -> String
+renderModuleName (ModuleNameOne _ s) = renderIdent s
+renderModuleName (ModuleNameMany _ n ws2 rest) =
+  renderIdent n <> "." <> foldMap renderWhitespace ws2 <>
+  renderModuleName rest
+
+renderDot :: Dot -> String
+renderDot (Dot ws) = "." <> foldMap renderWhitespace ws
+
+renderRelativeModuleName :: RelativeModuleName v a -> String
+renderRelativeModuleName (RelativeWithName ds mn) =
+  foldMap renderDot ds <> renderModuleName mn
+renderRelativeModuleName (Relative ds ws) =
+  foldMap renderDot ds <> foldMap renderWhitespace ws
+
+renderImportAs :: (e a -> String) -> ImportAs e v a -> String
+renderImportAs f (ImportAs _ ea m) =
+  f ea <> foldMap (\(a, b) -> "as" <> foldMap renderWhitespace a <> renderIdent b) m
+
+renderImportTargets :: ImportTargets v a -> String
+renderImportTargets (ImportAll _ ws) = "*" <> foldMap renderWhitespace ws
+renderImportTargets (ImportSome _ ts) =
+  renderCommaSep1 (renderImportAs renderIdent) ts
+renderImportTargets (ImportSomeParens _ ws1 ts ws2) =
+  "(" <> foldMap renderWhitespace ws1 <>
+  renderCommaSep1' (renderImportAs renderIdent) ts <>
+  ")" <> foldMap renderWhitespace ws2
 
 renderSmallStatement :: SmallStatement v a -> String
+renderSmallStatement (Raise _ ws x) =
+  "raise" <> foldMap renderWhitespace ws <>
+  foldMap
+    (\(b, c) ->
+       renderExpr b <>
+       foldMap
+         (\(d, e) ->
+            "as" <> foldMap renderWhitespace d <>
+            renderExpr e)
+         c)
+    x
 renderSmallStatement (Return _ ws expr) =
   "return" <> foldMap renderWhitespace ws <> renderExpr expr
 renderSmallStatement (Expr _ expr) = renderExpr expr
@@ -162,6 +268,7 @@ renderSmallStatement (Assign _ lvalue ws1 ws2 rvalue) =
   renderExpr lvalue <> foldMap renderWhitespace ws1 <> "=" <>
   foldMap renderWhitespace ws2 <> renderExpr rvalue
 renderSmallStatement (Pass _) = "pass"
+renderSmallStatement (Continue _) = "continue"
 renderSmallStatement (Break _) = "break"
 renderSmallStatement (Global _ ws ids) =
   "global" <> foldMap renderWhitespace ws <> renderCommaSep1 renderIdent ids
@@ -169,6 +276,25 @@ renderSmallStatement (Nonlocal _ ws ids) =
   "nonlocal" <> foldMap renderWhitespace ws <> renderCommaSep1 renderIdent ids
 renderSmallStatement (Del _ ws ids) =
   "del" <> foldMap renderWhitespace ws <> renderCommaSep1 renderIdent ids
+renderSmallStatement (Import _ ws ns) =
+  "import" <> foldMap renderWhitespace ws <>
+  renderCommaSep1 (renderImportAs renderModuleName) ns
+renderSmallStatement (From _ ws1 name ws3 ns) =
+  "from" <> foldMap renderWhitespace ws1 <>
+  renderRelativeModuleName name <> "import" <> foldMap renderWhitespace ws3 <>
+  renderImportTargets ns
+
+renderBlock :: Block v a -> Lines String
+renderBlock =
+  foldMap
+    (\(_, a, b) ->
+       (foldMap renderWhitespace a <>) <$>
+       either
+         (\(y, z) ->
+            OneLine $ foldMap renderComment y <> renderNewline z)
+          renderStatement
+          b) .
+  view _Wrapped
 
 renderCompoundStatement :: CompoundStatement v a -> Lines String
 renderCompoundStatement (Fundef _ ws1 name ws2 params ws3 ws4 nl body) =
@@ -176,24 +302,17 @@ renderCompoundStatement (Fundef _ ws1 name ws2 params ws3 ws4 nl body) =
   where
     firstLine =
       "def" <> foldMap renderWhitespace ws1 <> renderIdent name <>
-      foldMap renderWhitespace ws2 <> renderParams params <>
-      foldMap renderWhitespace ws3 <> ":" <> foldMap renderWhitespace ws4
-    restLines =
-      foldMap
-        (\(_, a, b) -> (foldMap renderWhitespace a <>) <$> renderStatement b)
-        (view _Wrapped body)
-renderCompoundStatement (If _ ws1 expr ws2 ws3 nl body body') =
+      "(" <> foldMap renderWhitespace ws2 <> renderCommaSep renderParam params <>
+      ")" <> foldMap renderWhitespace ws3 <> ":" <> foldMap renderWhitespace ws4
+    restLines = renderBlock body
+renderCompoundStatement (If _ ws1 expr ws3 nl body body') =
   ManyLines firstLine nl restLines
   where
     firstLine =
       "if" <> foldMap renderWhitespace ws1 <>
-      renderExpr expr <> foldMap renderWhitespace ws2 <> ":" <>
+      renderExpr expr <> ":" <>
       foldMap renderWhitespace ws3
-    restLines =
-      foldMap
-        (\(_, a, b) -> (foldMap renderWhitespace a <>) <$> renderStatement b)
-        (view _Wrapped body) <>
-      fromMaybe mempty elseLines
+    restLines = renderBlock body <> fromMaybe mempty elseLines
     elseLines =
       ManyLines <$>
       fmap
@@ -202,20 +321,75 @@ renderCompoundStatement (If _ ws1 expr ws2 ws3 nl body body') =
            foldMap renderWhitespace ws4)
         body' <*>
       fmap (\(_, _, nl2, _) -> nl2) body' <*>
-      fmap
-        (\(_, _, _, body'') ->
-           foldMap
-             (\(_, a, b) -> (foldMap renderWhitespace a <>) <$> renderStatement b)
-             (view _Wrapped body''))
-        body'
-renderCompoundStatement (While _ ws1 expr ws2 ws3 nl body) =
+      fmap (\(_, _, _, body'') -> renderBlock body'') body'
+renderCompoundStatement (While _ ws1 expr ws3 nl body) =
   ManyLines
     ("while" <> foldMap renderWhitespace ws1 <> renderExpr expr <>
-     foldMap renderWhitespace ws2 <> ":" <> foldMap renderWhitespace ws3)
+     ":" <> foldMap renderWhitespace ws3)
     nl
-    (foldMap
-       (\(_, a, b) -> (foldMap renderWhitespace a <>) <$> renderStatement b)
-       (view _Wrapped body))
+    (renderBlock body)
+renderCompoundStatement (TryExcept _ a b c d e f g) =
+  ManyLines
+    ("try" <> foldMap renderWhitespace a <> ":" <> foldMap renderWhitespace b)
+    c
+    (renderBlock d) <>
+  foldMap
+    (\(ws1, eas, ws2, nl, bl) ->
+       ManyLines
+         ("except" <> foldMap renderWhitespace ws1 <>
+          renderExceptAs eas <> ":" <> foldMap renderWhitespace ws2)
+         nl
+         (renderBlock bl))
+    e <>
+  foldMap
+    (\(ws1, ws2, nl, bl) ->
+       ManyLines
+         ("else" <> foldMap renderWhitespace ws1 <> ":" <> foldMap renderWhitespace ws2)
+         nl
+         (renderBlock bl))
+    f <>
+  foldMap
+    (\(ws1, ws2, nl, bl) ->
+       ManyLines
+         ("finally" <> foldMap renderWhitespace ws1 <> ":" <> foldMap renderWhitespace ws2)
+         nl
+         (renderBlock bl))
+    g
+renderCompoundStatement (TryFinally _ a b c d e f g h) =
+  ManyLines
+    ("try" <> foldMap renderWhitespace a <> ":" <> foldMap renderWhitespace b)
+    c
+    (renderBlock d) <>
+  ManyLines
+    ("finally" <> foldMap renderWhitespace e <> ":" <> foldMap renderWhitespace f)
+    g
+    (renderBlock h)
+renderCompoundStatement (For _ a b c d e f g h) =
+  ManyLines
+    ("for" <> foldMap renderWhitespace a <> renderExpr b <>
+     "in" <> foldMap renderWhitespace c <> renderExpr d <> ":" <>
+     foldMap renderWhitespace e)
+    f
+    (renderBlock g) <>
+  foldMap
+    (\(x, y, z, w) ->
+       ManyLines
+         ("else" <> foldMap renderWhitespace x <> ":" <> foldMap renderWhitespace y)
+         z
+         (renderBlock w))
+    h
+renderCompoundStatement (ClassDef _ a b c d e f) =
+  ManyLines
+    ("class" <> foldMap renderWhitespace a <> renderIdent b <>
+     foldMap
+       (\(x, y, z) ->
+          "(" <> foldMap renderWhitespace x <>
+          foldMap (renderCommaSep1 renderArg) y <>
+          ")" <> foldMap renderWhitespace z)
+       c <>
+     ":" <> foldMap renderWhitespace d)
+    e
+    (renderBlock f)
 
 renderStatement :: Statement v a -> Lines String
 renderStatement (CompoundStatement c) = renderCompoundStatement c
@@ -223,49 +397,54 @@ renderStatement (SmallStatements s ss sc nl) =
   ManyLines
   (renderSmallStatement s <>
    foldMap
-     (\(a, b, c) ->
-        foldMap renderWhitespace a <> ";" <>
+     (\(b, c) ->
+        ";" <>
         foldMap renderWhitespace b <>
         renderSmallStatement c)
      ss <>
    foldMap
-     (\(a, b) -> foldMap renderWhitespace a <> ";" <> foldMap renderWhitespace b)
+     (\b -> ";" <> foldMap renderWhitespace b)
      sc)
   nl
   NoLines
 
-renderArgs :: CommaSep (Arg v a) -> String
-renderArgs a = "(" <> renderCommaSep go a <> ")"
-  where
-    go (PositionalArg _ expr) = renderExpr expr
-    go (KeywordArg _ name ws1 ws2 expr) =
-      renderIdent name <> foldMap renderWhitespace ws1 <> "=" <>
-      foldMap renderWhitespace ws2 <> renderExpr expr
+renderExceptAs :: ExceptAs v a -> String
+renderExceptAs (ExceptAs _ e f) =
+  renderExpr e <>
+  foldMap (\(a, b) -> foldMap renderWhitespace a <> renderIdent b) f
 
-renderParams :: CommaSep (Param v a) -> String
-renderParams a = "(" <> renderCommaSep go a <> ")"
-  where
-    go (PositionalParam _ name) = renderIdent name
-    go (KeywordParam _ name ws1 ws2 expr) =
-      renderIdent name <>
-      foldMap renderWhitespace ws1 <> "=" <>
-      foldMap renderWhitespace ws2 <> renderExpr expr
+renderArg :: Arg v a -> String
+renderArg (PositionalArg _ expr) = renderExpr expr
+renderArg (KeywordArg _ name ws2 expr) =
+  renderIdent name <> "=" <>
+  foldMap renderWhitespace ws2 <> renderExpr expr
+renderArg (StarArg _ ws expr) = "*" <> foldMap renderWhitespace ws <> renderExpr expr
+renderArg (DoubleStarArg _ ws expr) = "**" <> foldMap renderWhitespace ws <> renderExpr expr
+
+renderParam :: Param v a -> String
+renderParam (PositionalParam _ name) = renderIdent name
+renderParam (StarParam _ ws name) = "*" <> foldMap renderWhitespace ws <> renderIdent name
+renderParam (DoubleStarParam _ ws name) = "**" <> foldMap renderWhitespace ws <> renderIdent name
+renderParam (KeywordParam _ name ws2 expr) =
+  renderIdent name <> "=" <>
+  foldMap renderWhitespace ws2 <> renderExpr expr
 
 renderBinOp :: BinOp a -> String
-renderBinOp (Is _) = "is"
-renderBinOp (Plus _) = "+"
-renderBinOp (Minus _) = "-"
-renderBinOp (Multiply _) = "*"
-renderBinOp (Divide _) = "/"
-renderBinOp (Exp _) = "**"
-renderBinOp (BoolAnd _) = "and"
-renderBinOp (BoolOr _) = "or"
-renderBinOp (Equals _) = "=="
+renderBinOp (Is _ ws) = "is" <> foldMap renderWhitespace ws
+renderBinOp (Plus _ ws) = "+" <> foldMap renderWhitespace ws
+renderBinOp (Minus _ ws) = "-" <> foldMap renderWhitespace ws
+renderBinOp (Multiply _ ws) = "*" <> foldMap renderWhitespace ws
+renderBinOp (Divide _ ws) = "/" <> foldMap renderWhitespace ws
+renderBinOp (Exp _ ws) = "**" <> foldMap renderWhitespace ws
+renderBinOp (BoolAnd _ ws) = "and" <> foldMap renderWhitespace ws
+renderBinOp (BoolOr _ ws) = "or" <> foldMap renderWhitespace ws
+renderBinOp (Equals _ ws) = "==" <> foldMap renderWhitespace ws
 
 renderModule :: Module v a -> String
 renderModule (Module ms) =
   foldMap
     (either
-       (\(a, b) -> foldMap renderWhitespace a <> renderNewline b)
+       (\(a, b, c) ->
+          foldMap renderWhitespace a <> foldMap renderComment b <> renderNewline c)
        (renderLines . renderStatement))
     ms
